@@ -135,7 +135,6 @@ def split_model(model_name, vit_alpha=0.5):
     if torch.backends.mps.is_available():
         # For MPS, we don't split the model across devices
         # since MPS typically runs on a single device
-        # For MPS, put everything on the same device
         for i in range(num_layers):
             device_map[f'language_model.model.layers.{i}'] = 0
 
@@ -148,9 +147,10 @@ def split_model(model_name, vit_alpha=0.5):
         device_map['language_model.output'] = 0
         device_map['language_model.lm_head'] = 0
         return device_map
-
-    else:
+    # Check if CUDA is available
+    elif torch.cuda.is_available():
         # Original CUDA implementation
+        world_size = torch.cuda.device_count()
         # Since the first GPU will be used for ViT, treat it as half a GPU.
         num_layers_per_gpu = math.ceil(num_layers / (world_size - vit_alpha))
         num_layers_per_gpu = [num_layers_per_gpu] * world_size
@@ -170,60 +170,84 @@ def split_model(model_name, vit_alpha=0.5):
         device_map['language_model.lm_head'] = 0
         device_map[f'language_model.model.layers.{num_layers - 1}'] = 0
         return device_map
+    else:
+        # Fallback to CPU
+        logger.info("Neither MPS nor CUDA is available. Using CPU.")
+        for i in range(num_layers):
+            device_map[f'language_model.model.layers.{i}'] = 0
+
+        device_map['vision_model'] = 0
+        device_map['mlp1'] = 0
+        device_map['language_model.model.tok_embeddings'] = 0
+        device_map['language_model.model.embed_tokens'] = 0
+        device_map['language_model.model.norm'] = 0
+        device_map['language_model.model.rotary_emb'] = 0
+        device_map['language_model.output'] = 0
+        device_map['language_model.lm_head'] = 0
+        return device_map
 
 class ModelWorker:
     def __init__(self, controller_addr, worker_addr, worker_id, model_path, model_name,
-                 load_8bit, device, context_len=8192):
+             load_8bit, device, context_len=8192):
         self.controller_addr = controller_addr
         self.worker_addr = worker_addr
         self.worker_id = worker_id
+
+        # Handle model name
         if model_path.endswith('/'):
             model_path = model_path[:-1]
         if model_name is None:
             model_paths = model_path.split('/')
-            if model_paths[-1].startswith('checkpoint-'):
-                self.model_name = model_paths[-2] + '_' + model_paths[-1]
-            else:
-                self.model_name = model_paths[-1]
+            self.model_name = model_paths[-2] + '_' + model_paths[-1] if model_paths[-1].startswith('checkpoint-') else model_paths[-1]
         else:
             self.model_name = model_name
 
         logger.info(f'Loading the model {self.model_name} on worker {worker_id} ...')
 
+        # Prepare tokenizer
         tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True, use_fast=False)
         tokens_to_keep = ['<box>', '</box>', '<ref>', '</ref>']
         tokenizer.additional_special_tokens = [item for item in tokenizer.additional_special_tokens if item not in tokens_to_keep]
         self.tokenizer = tokenizer
 
-        # Determine if MPS is available and should be used
-        self.use_mps = device == 'mps' and torch.backends.mps.is_available()
-        self.device = torch.device('mps') if self.use_mps else device
+        # Determine best device
+        if device == 'auto':
+            if torch.backends.mps.is_available():
+                device = 'mps'
+                logger.info("Auto-selected MPS device")
+            elif torch.cuda.is_available():
+                device = 'cuda'
+                logger.info("Auto-selected CUDA device")
+            else:
+                device = 'cpu'
+                logger.info("Auto-selected CPU device (no MPS or CUDA available)")
 
-        # Select appropriate dtype based on device
-        if self.use_mps:
-            # MPS doesn't support bfloat16, fall back to float16
-            model_dtype = torch.float16
-            logger.info(f"Using MPS device with float16 precision")
-        else:
-            model_dtype = torch.bfloat16
+        # Validate requested device is available
+        if device == 'mps' and not torch.backends.mps.is_available():
+            logger.warning("MPS requested but not available. Falling back to CPU.")
+            device = 'cpu'
+        elif device == 'cuda' and not torch.cuda.is_available():
+            logger.warning("CUDA requested but not available. Falling back to CPU.")
+            device = 'cpu'
+
+        # Set device and dtype
+        self.use_mps = device == 'mps'
+        self.device = torch.device(device if device != 'mps' else 'mps')
+        model_dtype = torch.float16 if self.use_mps else (torch.bfloat16 if device == 'cuda' else torch.float32)
+
+        # Load model
+        model_args = {
+            'torch_dtype': model_dtype,
+            'trust_remote_code': True,
+            'load_in_8bit': load_8bit and device == 'cuda'
+        }
 
         if device == 'auto':
-            device_map = split_model(self.model_name)
-            self.model = AutoModel.from_pretrained(
-                model_path,
-                load_in_8bit=load_8bit and not self.use_mps,  # Don't use 8bit with MPS
-                torch_dtype=model_dtype,
-                device_map=device_map,
-                trust_remote_code=True).eval()
+            model_args['device_map'] = split_model(self.model_name)
+            self.model = AutoModel.from_pretrained(model_path, **model_args).eval()
         else:
-            self.model = AutoModel.from_pretrained(
-                model_path,
-                load_in_8bit=load_8bit and not self.use_mps,  # Don't use 8bit with MPS
-                torch_dtype=model_dtype,
-                trust_remote_code=True).eval()
-
-        if not load_8bit and device != 'auto':
-            if self.use_mps:
+            self.model = AutoModel.from_pretrained(model_path, **model_args).eval()
+            if device == 'mps':
                 self.model = self.model.to('mps')
             elif device == 'cuda':
                 self.model = self.model.cuda()
@@ -233,8 +257,7 @@ class ModelWorker:
         self.image_size = self.model.config.force_image_size
         self.context_len = context_len
         self.register_to_controller()
-        self.heart_beat_thread = threading.Thread(
-            target=heart_beat_worker, args=(self,))
+        self.heart_beat_thread = threading.Thread(target=heart_beat_worker, args=(self,))
         self.heart_beat_thread.start()
 
     def reload_model(self):
@@ -495,9 +518,9 @@ if __name__ == '__main__':
     parser.add_argument('--port', type=int, default=40001)
     parser.add_argument('--worker-address', type=str, default='http://0.0.0.0:40001')
     parser.add_argument('--controller-address', type=str, default='http://0.0.0.0:40000')
-    parser.add_argument('--model-path', type=str, default='facebook/opt-350m')
+    parser.add_argument('--model-path', type=str, default='OpenGVLab/InternVL3-14B')
     parser.add_argument('--model-name', type=str)
-    parser.add_argument('--device', type=str, default='cuda',
+    parser.add_argument('--device', type=str, default='auto',
                         choices=['cuda', 'cpu', 'mps', 'auto'],
                         help='Device to run on: cuda (NVIDIA GPUs), cpu, mps (Apple Silicon), or auto')
     parser.add_argument('--limit-model-concurrency', type=int, default=5)
