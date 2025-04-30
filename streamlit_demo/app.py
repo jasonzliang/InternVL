@@ -35,7 +35,38 @@ args = parser.parse_args(custom_args)
 controller_url = args.controller_url
 sd_worker_url = args.sd_worker_url
 max_image_limit = args.max_image_limit
-print('args:', args)
+print('Streamlit args:', args)
+
+if 'needs_rerun' not in st.session_state:
+    st.session_state.needs_rerun = False
+
+
+def set_rerun_flag():
+    st.session_state.needs_rerun = True
+
+
+# Modified function to use the flag instead of direct rerun
+def load_upload_file_and_show():
+    if uploaded_files is not None:
+        images, filenames = [], []
+        for file in uploaded_files:
+            file_bytes = np.asarray(bytearray(file.read()), dtype=np.uint8)
+            img = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
+            img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+            img = Image.fromarray(img)
+            images.append(img)
+        with upload_image_preview.container():
+            Library(images)
+
+        image_hashes = [hashlib.md5(image.tobytes()).hexdigest() for image in images]
+        for image, hash in zip(images, image_hashes):
+            t = datetime.datetime.now()
+            filename = os.path.join(LOGDIR, 'serve_images', f'{t.year}-{t.month:02d}-{t.day:02d}', f'{hash}.jpg')
+            filenames.append(filename)
+            if not os.path.isfile(filename):
+                os.makedirs(os.path.dirname(filename), exist_ok=True)
+                image.save(filename)
+    return images, filenames
 
 
 def get_conv_log_filename():
@@ -163,7 +194,7 @@ def clear_chat_history():
 
 def clear_file_uploader():
     st.session_state.uploader_key += 1
-    st.rerun()
+    st.session_state.needs_rerun = True  # Use flag instead of direct rerun
 
 
 def combined_func(func_list):
@@ -230,7 +261,7 @@ def query_image_generation(response, sd_worker_url, timeout=15):
     match = re.search(pattern, response, re.DOTALL)
     if match:
         payload = {'caption': match.group(1)}
-        print('drawing-instruction:', payload)
+        print('Drawing instruction:', payload)
         response = requests.post(sd_worker_url, json=payload, timeout=timeout)
         response.raise_for_status()
         image = Image.open(BytesIO(response.content))
@@ -241,8 +272,7 @@ def query_image_generation(response, sd_worker_url, timeout=15):
 
 def regenerate():
     st.session_state.messages = st.session_state.messages[:-1]
-    st.rerun()
-
+    st.session_state.needs_rerun = True  # Set the flag instead of direct rerun
 
 logo_code = """
 <svg width="1700" height="200" xmlns="http://www.w3.org/2000/svg">
@@ -272,8 +302,10 @@ system_message_editable = '请尽可能详细地回答用户的问题。'
 with st.sidebar:
     model_list = get_model_list()
     # "[![Open in GitHub](https://github.com/codespaces/badge.svg)](https://github.com/OpenGVLab/InternVL)"
-    lan = st.selectbox('#### Language / 语言', ['English', '中文'], on_change=st.rerun,
+    lan = st.selectbox('#### Language / 语言', ['English', '中文'],
+                       on_change=set_rerun_flag,
                        help='This is only for switching the UI language. 这仅用于切换UI界面的语言。')
+
     if lan == 'English':
         st.logo(logo_code, link='https://github.com/OpenGVLab/InternVL', icon_image=logo_code)
         st.subheader('Models and parameters')
@@ -292,10 +324,11 @@ with st.sidebar:
                                         value=12, step=1)
         upload_image_preview = st.empty()
         uploaded_files = st.file_uploader('Upload files', accept_multiple_files=True,
-                                          type=['png', 'jpg', 'jpeg', 'webp'],
-                                          help='You can upload multiple images (max to 4) or a single video.',
-                                          key=f'uploader_{st.session_state.uploader_key}',
-                                          on_change=st.rerun)
+                                  type=['png', 'jpg', 'jpeg', 'webp'],
+                                  help='You can upload multiple images (max to 4) or a single video.',
+                                  key=f'uploader_{st.session_state.uploader_key}',
+                                  on_change=set_rerun_flag)
+
         uploaded_pil_images, save_filenames = load_upload_file_and_show()
         todo_list = st.sidebar.selectbox('Our to-do list', ['👏This is our to-do list',
                                                             '1. Support for video uploads',
@@ -321,7 +354,7 @@ with st.sidebar:
                                           type=['png', 'jpg', 'jpeg', 'webp'],
                                           help='你可以上传多张图像（最多4张）或者一个视频。',
                                           key=f'uploader_{st.session_state.uploader_key}',
-                                          on_change=st.rerun)
+                                          on_change=set_rerun_flag)
         uploaded_pil_images, save_filenames = load_upload_file_and_show()
         todo_list = st.sidebar.selectbox('我们的待办事项', ['👏这里是我们的待办事项', '1. 支持上传视频',
                                                      '2. 支持上传 PDF 文档', '3. 写一个使用文档'], key='todo_list',
@@ -392,7 +425,7 @@ with gallery_placeholder.container():
         gallery_placeholder.empty()
         st.session_state.messages.append({'role': 'user', 'content': captions[img_idx], 'image': [images[img_idx]],
                                           'filenames': [examples[img_idx]]})
-        st.rerun()  # Fixed an issue where examples were not emptied
+        st.session_state.needs_rerun = True  # Set the flag instead of direct rerun
 
 if len(st.session_state.messages) > 0:
     gallery_placeholder.empty()
@@ -470,5 +503,11 @@ if len(st.session_state.messages) > 0:
     with col2:
         st.button(text2, on_click=regenerate, key='regenerate_button')
 
-print(st.session_state.messages)
+print("Messages:", st.session_state.messages)
 save_chat_history()
+
+# Add this at the very end of your script
+if st.session_state.needs_rerun:
+    st.session_state.needs_rerun = False
+    st.rerun()
+

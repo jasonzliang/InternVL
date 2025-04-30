@@ -12,6 +12,7 @@ import asyncio
 import base64
 import json
 import math
+import traceback
 import threading
 import time
 import uuid
@@ -413,7 +414,8 @@ class ModelWorker:
         else:
             pixel_values = None
 
-        streamer = TextIteratorStreamer(self.tokenizer, skip_prompt=True, skip_special_tokens=True, timeout=10)
+        streamer = TextIteratorStreamer(self.tokenizer, skip_prompt=True,
+            skip_special_tokens=True, timeout=300)
         generation_config = dict(
             num_beams=1,
             max_new_tokens=max_new_tokens,
@@ -442,9 +444,11 @@ class ModelWorker:
             generated_text += new_text
             if generated_text.endswith(self.model.conv_template.sep):
                 generated_text = generated_text[:-len(self.model.conv_template.sep)]
+            # logger.info(f'Generated text: {generated_text}')
             yield json.dumps({'text': generated_text, 'error_code': 0}).encode() + b'\0'
         logger.info(f'max_input_tile_list: {max_input_tile_list}, history: {history}, '
                     f'question: {question}, answer: {generated_text}')
+
         self.model.system_message = old_system_message
 
     def generate_stream_gate(self, params):
@@ -453,6 +457,7 @@ class ModelWorker:
                 yield x
         except ValueError as e:
             print('Caught ValueError:', e)
+            traceback.print_exc()
             ret = {
                 'text': server_error_msg,
                 'error_code': 1,
@@ -460,6 +465,7 @@ class ModelWorker:
             yield json.dumps(ret).encode() + b'\0'
         except torch.cuda.CudaError as e:
             print('Caught torch.cuda.CudaError:', e)
+            traceback.print_exc()
             ret = {
                 'text': server_error_msg,
                 'error_code': 1,
@@ -468,6 +474,7 @@ class ModelWorker:
         except (RuntimeError, OSError) as e:
             # MPS errors are often reported as RuntimeError or OSError
             print(f'Caught error (possibly MPS-related): {e}')
+            traceback.print_exc()
             ret = {
                 'text': server_error_msg,
                 'error_code': 1,
@@ -475,6 +482,7 @@ class ModelWorker:
             yield json.dumps(ret).encode() + b'\0'
         except Exception as e:
             print('Caught Unknown Error', e)
+            traceback.print_exc()
             ret = {
                 'text': server_error_msg,
                 'error_code': 1,
