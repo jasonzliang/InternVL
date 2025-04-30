@@ -172,4 +172,5 @@ data_process/
 
 batchscript-*
 results/
+streamlit_demo/logs
 .tags*
