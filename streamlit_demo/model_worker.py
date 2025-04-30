@@ -242,6 +242,7 @@ class ModelWorker:
             'trust_remote_code': True,
             'load_in_8bit': load_8bit and device == 'cuda'
         }
+        logger.info("Loading model path:", model_path)
 
         if device == 'auto':
             model_args['device_map'] = split_model(self.model_name)
