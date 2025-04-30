@@ -113,9 +113,9 @@ def heart_beat_worker(controller):
         controller.send_heart_beat()
 
 
+# Add MPS support to the model loading process
 def split_model(model_name, vit_alpha=0.5):
     device_map = {}
-    world_size = torch.cuda.device_count()
     num_layers = {
         'InternVL-Chat-V1-1': 40, 'InternVL-Chat-V1-2': 60, 'InternVL-Chat-V1-2-Plus': 60,
         # InternVL 1.5 Series
@@ -125,29 +125,51 @@ def split_model(model_name, vit_alpha=0.5):
         'InternVL2-78B': 80, 'InternVL2-Pro': 80,
         # InternVL 2.5 Series
         'InternVL2_5-1B': 24, 'InternVL2_5-2B': 24, 'InternVL2_5-4B': 36, 'InternVL2_5-8B': 32,
-        'InternVL2_5-26B': 48, 'InternVL2_5-38B': 64, 'InternVL2_5-78B': 80
+        'InternVL2_5-26B': 48, 'InternVL2_5-38B': 64, 'InternVL2_5-78B': 80,
+        # InternVL 3 Series
+        'InternVL3-1B': 24, 'InternVL3-2B': 24, 'InternVL3-4B': 36, 'InternVL3-8B': 32,
+        'InternVL3-26B': 48, 'InternVL3-38B': 64, 'InternVL3-78B': 80
     }[model_name]
-    # Since the first GPU will be used for ViT, treat it as half a GPU.
-    num_layers_per_gpu = math.ceil(num_layers / (world_size - vit_alpha))
-    num_layers_per_gpu = [num_layers_per_gpu] * world_size
-    num_layers_per_gpu[0] = math.ceil(num_layers_per_gpu[0] * (1 - vit_alpha))
-    layer_cnt = 0
-    for i, num_layer in enumerate(num_layers_per_gpu):
-        for j in range(num_layer):
-            device_map[f'language_model.model.layers.{layer_cnt}'] = i
-            layer_cnt += 1
-    device_map['vision_model'] = 0
-    device_map['mlp1'] = 0
-    device_map['language_model.model.tok_embeddings'] = 0
-    device_map['language_model.model.embed_tokens'] = 0
-    device_map['language_model.model.norm'] = 0
-    device_map['language_model.model.rotary_emb'] = 0
-    device_map['language_model.output'] = 0
-    device_map['language_model.lm_head'] = 0
-    device_map[f'language_model.model.layers.{num_layers - 1}'] = 0
 
-    return device_map
+    # Check if MPS is available
+    if torch.backends.mps.is_available():
+        # For MPS, we don't split the model across devices
+        # since MPS typically runs on a single device
+        # For MPS, put everything on the same device
+        for i in range(num_layers):
+            device_map[f'language_model.model.layers.{i}'] = 0
 
+        device_map['vision_model'] = 0
+        device_map['mlp1'] = 0
+        device_map['language_model.model.tok_embeddings'] = 0
+        device_map['language_model.model.embed_tokens'] = 0
+        device_map['language_model.model.norm'] = 0
+        device_map['language_model.model.rotary_emb'] = 0
+        device_map['language_model.output'] = 0
+        device_map['language_model.lm_head'] = 0
+        return device_map
+
+    else:
+        # Original CUDA implementation
+        # Since the first GPU will be used for ViT, treat it as half a GPU.
+        num_layers_per_gpu = math.ceil(num_layers / (world_size - vit_alpha))
+        num_layers_per_gpu = [num_layers_per_gpu] * world_size
+        num_layers_per_gpu[0] = math.ceil(num_layers_per_gpu[0] * (1 - vit_alpha))
+        layer_cnt = 0
+        for i, num_layer in enumerate(num_layers_per_gpu):
+            for j in range(num_layer):
+                device_map[f'language_model.model.layers.{layer_cnt}'] = i
+                layer_cnt += 1
+        device_map['vision_model'] = 0
+        device_map['mlp1'] = 0
+        device_map['language_model.model.tok_embeddings'] = 0
+        device_map['language_model.model.embed_tokens'] = 0
+        device_map['language_model.model.norm'] = 0
+        device_map['language_model.model.rotary_emb'] = 0
+        device_map['language_model.output'] = 0
+        device_map['language_model.lm_head'] = 0
+        device_map[f'language_model.model.layers.{num_layers - 1}'] = 0
+        return device_map
 
 class ModelWorker:
     def __init__(self, controller_addr, worker_addr, worker_id, model_path, model_name,
@@ -173,24 +195,40 @@ class ModelWorker:
         tokenizer.additional_special_tokens = [item for item in tokenizer.additional_special_tokens if item not in tokens_to_keep]
         self.tokenizer = tokenizer
 
+        # Determine if MPS is available and should be used
+        self.use_mps = device == 'mps' and torch.backends.mps.is_available()
+        self.device = torch.device('mps') if self.use_mps else device
+
+        # Select appropriate dtype based on device
+        if self.use_mps:
+            # MPS doesn't support bfloat16, fall back to float16
+            model_dtype = torch.float16
+            logger.info(f"Using MPS device with float16 precision")
+        else:
+            model_dtype = torch.bfloat16
+
         if device == 'auto':
             device_map = split_model(self.model_name)
             self.model = AutoModel.from_pretrained(
                 model_path,
-                load_in_8bit=load_8bit,
-                torch_dtype=torch.bfloat16,
+                load_in_8bit=load_8bit and not self.use_mps,  # Don't use 8bit with MPS
+                torch_dtype=model_dtype,
                 device_map=device_map,
                 trust_remote_code=True).eval()
         else:
             self.model = AutoModel.from_pretrained(
                 model_path,
-                load_in_8bit=load_8bit,
-                torch_dtype=torch.bfloat16,
+                load_in_8bit=load_8bit and not self.use_mps,  # Don't use 8bit with MPS
+                torch_dtype=model_dtype,
                 trust_remote_code=True).eval()
-        if not load_8bit and not device == 'auto':
-            self.model = self.model.cuda()
+
+        if not load_8bit and device != 'auto':
+            if self.use_mps:
+                self.model = self.model.to('mps')
+            elif device == 'cuda':
+                self.model = self.model.cuda()
+
         self.load_8bit = load_8bit
-        self.device = device
         self.model_path = model_path
         self.image_size = self.model.config.force_image_size
         self.context_len = context_len
@@ -201,23 +239,35 @@ class ModelWorker:
 
     def reload_model(self):
         del self.model
-        torch.cuda.empty_cache()
+        torch.cuda.empty_cache() if not self.use_mps else torch.mps.empty_cache()
+
+        # Select appropriate dtype based on device
+        if self.use_mps:
+            # MPS doesn't support bfloat16, fall back to float16
+            model_dtype = torch.float16
+        else:
+            model_dtype = torch.bfloat16
+
         if self.device == 'auto':
             device_map = split_model(self.model_name)
             self.model = AutoModel.from_pretrained(
                 self.model_path,
-                load_in_8bit=self.load_8bit,
-                torch_dtype=torch.bfloat16,
+                load_in_8bit=self.load_8bit and not self.use_mps,
+                torch_dtype=model_dtype,
                 device_map=device_map,
                 trust_remote_code=True).eval()
         else:
             self.model = AutoModel.from_pretrained(
                 self.model_path,
-                load_in_8bit=self.load_8bit,
-                torch_dtype=torch.bfloat16,
+                load_in_8bit=self.load_8bit and not self.use_mps,
+                torch_dtype=model_dtype,
                 trust_remote_code=True).eval()
-        if not self.load_8bit and not self.device == 'auto':
-            self.model = self.model.cuda()
+
+        if not self.load_8bit and self.device != 'auto':
+            if self.use_mps:
+                self.model = self.model.to('mps')
+            elif self.device == 'cuda':
+                self.model = self.model.cuda()
 
     def register_to_controller(self):
         logger.info('Register to controller')
@@ -328,7 +378,14 @@ class ModelWorker:
                 num_patches_list.append(len(tiles))
                 image_tiles += tiles
             pixel_values = [transform(item) for item in image_tiles]
-            pixel_values = torch.stack(pixel_values).to(self.model.device, dtype=torch.bfloat16)
+            pixel_values = torch.stack(pixel_values)
+
+            # Determine the correct device and dtype for the image tensor
+            if self.use_mps:
+                pixel_values = pixel_values.to(self.device, dtype=torch.float16)
+            else:
+                pixel_values = pixel_values.to(self.model.device, dtype=torch.bfloat16)
+
             logger.info(f'Split images to {pixel_values.shape}')
         else:
             pixel_values = None
@@ -385,6 +442,14 @@ class ModelWorker:
                 'error_code': 1,
             }
             yield json.dumps(ret).encode() + b'\0'
+        except (RuntimeError, OSError) as e:
+            # MPS errors are often reported as RuntimeError or OSError
+            print(f'Caught error (possibly MPS-related): {e}')
+            ret = {
+                'text': server_error_msg,
+                'error_code': 1,
+            }
+            yield json.dumps(ret).encode() + b'\0'
         except Exception as e:
             print('Caught Unknown Error', e)
             ret = {
@@ -427,12 +492,14 @@ async def get_status(request: Request):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--host', type=str, default='0.0.0.0')
-    parser.add_argument('--port', type=int, default=21002)
-    parser.add_argument('--worker-address', type=str, default='http://localhost:21002')
-    parser.add_argument('--controller-address', type=str, default='http://localhost:21001')
+    parser.add_argument('--port', type=int, default=40001)
+    parser.add_argument('--worker-address', type=str, default='http://0.0.0.0:40001')
+    parser.add_argument('--controller-address', type=str, default='http://0.0.0.0:40000')
     parser.add_argument('--model-path', type=str, default='facebook/opt-350m')
     parser.add_argument('--model-name', type=str)
-    parser.add_argument('--device', type=str, default='cuda')
+    parser.add_argument('--device', type=str, default='cuda',
+                        choices=['cuda', 'cpu', 'mps', 'auto'],
+                        help='Device to run on: cuda (NVIDIA GPUs), cpu, mps (Apple Silicon), or auto')
     parser.add_argument('--limit-model-concurrency', type=int, default=5)
     parser.add_argument('--stream-interval', type=int, default=1)
     parser.add_argument('--load-8bit', action='store_true')

@@ -5,5 +5,4 @@ enableCORS = false
 
 [browser] # This ip and port will show in command prompt
 # serverAddress = "internvl.opengvlab.com" # Put your Local IP or Domain Name
-serverPort = 10003
-enableCORS = false
+serverPort = 8501

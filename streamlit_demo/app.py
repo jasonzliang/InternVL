@@ -28,8 +28,8 @@ from streamlit_image_select import image_select
 
 custom_args = sys.argv[1:]
 parser = argparse.ArgumentParser()
-parser.add_argument('--controller_url', type=str, default='http://10.140.60.209:10075', help='url of the controller')
-parser.add_argument('--sd_worker_url', type=str, default='http://0.0.0.0:40006', help='url of the stable diffusion worker')
+parser.add_argument('--controller_url', type=str, default='http://0.0.0.0:40000', help='url of the controller')
+parser.add_argument('--sd_worker_url', type=str, default='http://0.0.0.0:39999', help='url of the stable diffusion worker')
 parser.add_argument('--max_image_limit', type=int, default=4, help='maximum number of images')
 args = parser.parse_args(custom_args)
 controller_url = args.controller_url
