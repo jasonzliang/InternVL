@@ -127,8 +127,8 @@ def split_model(model_name, vit_alpha=0.5):
         'InternVL2_5-1B': 24, 'InternVL2_5-2B': 24, 'InternVL2_5-4B': 36, 'InternVL2_5-8B': 32,
         'InternVL2_5-26B': 48, 'InternVL2_5-38B': 64, 'InternVL2_5-78B': 80,
         # InternVL 3 Series
-        'InternVL3-1B': 24, 'InternVL3-2B': 24, 'InternVL3-4B': 36, 'InternVL3-8B': 32,
-        'InternVL3-26B': 48, 'InternVL3-38B': 64, 'InternVL3-78B': 80
+        'InternVL3-1B': 24, 'InternVL3-2B': 28, 'InternVL3-8B': 28, 'InternVL3-9B': 48,
+        'InternVL3-14B': 48, 'InternVL3-38B': 64, 'InternVL3-78B': 80
     }[model_name]
 
     # Check if MPS is available
