@@ -277,13 +277,12 @@ with st.sidebar:
     if lan == 'English':
         st.logo(logo_code, link='https://github.com/OpenGVLab/InternVL', icon_image=logo_code)
         st.subheader('Models and parameters')
-        selected_model = st.sidebar.selectbox('Choose a InternVL2 chat model', model_list, key='selected_model',
-                                              on_change=clear_chat_history,
-                                              help='Due to the limited GPU resources with public IP addresses, we can currently only deploy models up to a maximum of 26B.')
+        selected_model = st.sidebar.selectbox('Choose an InternVL chat model',
+            model_list, key='selected_model', on_change=clear_chat_history,
+            help='Due to the limited GPU resources with public IP addresses, we can currently only deploy models up to a maximum of 26B.')
         with st.expander('🤖 System Prompt'):
             persona_rec = st.text_area('System Prompt', value=system_message_editable,
-                                       help='System prompt is a pre-defined message used to instruct the assistant at the beginning of a conversation.',
-                                       height=200)
+                help='System prompt is a pre-defined message used to instruct the assistant at the beginning of a conversation.', height=200)
         with st.expander('🔥 Advanced Options'):
             temperature = st.slider('temperature', min_value=0.0, max_value=1.0, value=0.7, step=0.1)
             top_p = st.slider('top_p', min_value=0.0, max_value=1.0, value=0.95, step=0.05)
@@ -305,9 +304,8 @@ with st.sidebar:
                                          help='Here are some features we plan to support in the future.')
     else:
         st.subheader('模型和参数')
-        selected_model = st.sidebar.selectbox('选择一个 InternVL2 对话模型', model_list, key='selected_model',
-                                              on_change=clear_chat_history,
-                                              help='由于有限的公网GPU资源，我们暂时只能部署到最大参数26B的模型。')
+        selected_model = st.sidebar.selectbox('选择一个 InternVL2 对话模型', model_list, key='selected_model', on_change=clear_chat_history,
+            help='由于有限的公网GPU资源，我们暂时只能部署到最大参数26B的模型。')
         with st.expander('🤖 系统提示'):
             persona_rec = st.text_area('系统提示', value=system_message_editable,
                                        help='系统提示是在对话开始时用于指示助手的预定义消息。',
