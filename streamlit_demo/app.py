@@ -142,8 +142,8 @@ def generate_response(messages):
                 else:
                     output = data['text'] + f" (error_code: {data['error_code']})"
                     placeholder.markdown(output)
-        if ('\[' in output and '\]' in output) or ('\(' in output and '\)' in output):
-            output = output.replace('\[', '$').replace('\]', '$').replace('\(', '$').replace('\)', '$')
+        if ('\\[' in output and '\\]' in output) or ('\\(' in output and '\\)' in output):
+            output = output.replace('\\[', '$').replace('\\]', '$').replace('\\(', '$').replace('\\)', '$')
         placeholder.markdown(output)
     except requests.exceptions.RequestException as e:
         placeholder.markdown(server_error_msg)
